@@ -1,0 +1,132 @@
+%python 
+
+dbutils.fs.mkdirs("/datadog")
+dbutils.fs.mkdirs("/datadog/config")
+dbutils.fs.put("dbfs:/datadog/datadog-install-driver-workers.sh","""
+
+#!/bin/bash
+cat <<EOF >> /tmp/start_datadog.sh
+
+#!/bin/bash
+  
+  hostip=$(hostname -I | xargs)
+
+# This if statement checks whether the node is a driver node.
+if [[ \${DB_IS_DRIVER} = "TRUE" ]]; then
+
+  echo "Installing Datadog agent on the driver (master node) ..."
+  # Configure host tags for the driver
+  # If there is an error related to the cluster not being able to capture the cluster name then hard code the DB_CLUSTER_NAME variable
+  DD_TAGS="environment:\${DD_ENV}","databricks_cluster_id:\${DB_CLUSTER_ID}","databricks_cluster_name:\${DB_CLUSTER_NAME}","spark_host_ip:\${SPARK_LOCAL_IP}","spark_node:driver"
+    
+  # Install the latest Datadog agent on the driver as well as the worker nodes
+  DD_AGENT_MAJOR_VERSION=7 DD_HOSTNAME=\$HOSTNAME DD_API_KEY=\$DD_API_KEY DD_HOST_TAGS=\$DD_TAGS bash -c "\$(curl -L https://s3.amazonaws.com/dd-agent/scripts/install_script.sh)"
+  
+  # Wait for the agent to be installed
+  while [ -z \$datadoginstalled ]; do
+    if [ -e "/etc/datadog-agent/datadog.yaml" ]; then
+      datadoginstalled=TRUE
+    fi
+    sleep 2
+  done
+  echo "Datadog Agent is installed"
+
+  # The agent has many feature, this will enable many other features by updating the datadog.yaml file
+
+  # Enable log management in the agent
+  echo "logs_enabled: true" >> /etc/datadog-agent/datadog.yaml
+  # Enable exposing inventory configuration of the agent in the UI
+  echo "inventories_configuration_enabled: true" >> /etc/datadog-agent/datadog.yaml
+  # Enable live process monitoring and streaing
+  echo "process_config:" >> /etc/datadog-agent/datadog.yaml
+  echo "  enabled: true" >> /etc/datadog-agent/datadog.yaml
+  # Enable security compliance monitoring
+  echo "compliance_config:" >> /etc/datadog-agent/datadog.yaml
+  echo "  enabled: true" >> /etc/datadog-agent/datadog.yaml
+  
+  # The Datadog agent on Linux can leverage extended Berkeley packet filtering (eBPF) to run programs in the kernel.
+  # The system probe runs as a service and can be enabled via the system-probe.yaml file to turn on network performance monitoring.
+  # Some of the security features of the agent also leverage eBPF hence the need to use the system probe.
+  echo "network_config:" > /etc/datadog-agent/system-probe.yaml
+  echo "  enabled: true" >> /etc/datadog-agent/system-probe.yaml
+  echo "runtime_security_config:" >> /etc/datadog-agent/system-probe.yaml
+  echo "  enabled: true" >> /etc/datadog-agent/system-probe.yaml
+  echo "runtime_security_config:" > /etc/datadog-agent/security-agent.yaml
+  echo "  enabled: true" >> /etc/datadog-agent/security-agent.yaml
+
+  while [ -z \$gotparams ]; do
+    if [ -e "/tmp/driver-env.sh" ]; then
+      DB_DRIVER_PORT=\$(grep -i "CONF_UI_PORT" /tmp/driver-env.sh | cut -d'=' -f2)
+      gotparams=TRUE
+    fi
+    sleep 2
+  done
+
+  # This will write the configuration file for the Spark integration with structured streaming metrics enabled.
+  # The modifications will include other options in the spark.d/conf.yaml file.
+  echo "init_config:
+instances:
+    - spark_url: http://\${DB_DRIVER_IP}:\${DB_DRIVER_PORT}
+      spark_cluster_mode: spark_driver_mode
+      cluster_name: \${hostip}
+      streaming_metrics: true
+logs:
+    - type: file
+      path: /databricks/driver/logs/*.log
+      source: spark
+      service: databricks
+      log_processing_rules:
+        - type: multi_line
+          name: new_log_start_with_date
+          pattern: \d{2,4}[\-\/]\d{2,4}[\-\/]\d{2,4}.*" > /etc/datadog-agent/conf.d/spark.yaml
+
+# This is part of the above if statement which checks whether the node is a driver node otherwise it is a worker.
+else
+  # Configure the host tags for the workers. 
+  # If there is an error related to the cluster not being able to capture the cluster name then hard code the DB_CLUSTER_NAME variable.
+  DD_TAGS="environment:\${DD_ENV}","databricks_cluster_id:\${DB_CLUSTER_ID}","databricks_cluster_name:\${DB_CLUSTER_NAME}","spark_host_ip:\${SPARK_LOCAL_IP}","spark_node:worker"
+
+  # Install the latest Datadog agent on the worker nodes
+  DD_AGENT_MAJOR_VERSION=7 DD_HOSTNAME=\$HOSTNAME DD_API_KEY=\$DD_API_KEY DD_HOST_TAGS=\$DD_TAGS bash -c "\$(curl -L https://s3.amazonaws.com/dd-agent/scripts/install_script.sh)"
+
+  # Wait for the Datadog agent to be installed.
+  while [ -z \$datadoginstalled ]; do
+    if [ -e "/etc/datadog-agent/datadog.yaml" ]; then
+      datadoginstalled=TRUE
+    fi
+    sleep 2
+  done
+  echo "Datadog Agent is installed"
+
+  # The agent has many feature, this will enable many other features by updating the datadog.yaml file.
+  # Enable log management in the agent
+  echo "logs_enabled: true" >> /etc/datadog-agent/datadog.yaml
+  # Enable exposing inventory configuration of the agent in the UI
+  echo "inventories_configuration_enabled: true" >> /etc/datadog-agent/datadog.yaml
+  # Enable live process monitoring and streaing
+  echo "process_config:" >> /etc/datadog-agent/datadog.yaml
+  echo "  enabled: true" >> /etc/datadog-agent/datadog.yaml
+  # Enable security compliance monitoring
+  echo "compliance_config:" >> /etc/datadog-agent/datadog.yaml
+  echo "  enabled: true" >> /etc/datadog-agent/datadog.yaml
+
+  # The Datadog agent on Linux can leverage extended Berkeley packet filtering (eBPF) to run programs in the kernel.
+  # The system probe runs as a service and can be enabled via the system-probe.yaml file to turn on network performance monitoring.
+  # Some of the security features of the agent also leverage eBPF hence the need to use the system probe.
+  echo "network_config:" >> /etc/datadog-agent/system-probe.yaml
+  echo "  enabled: true" >> /etc/datadog-agent/system-probe.yaml
+  echo "runtime_security_config:" >> /etc/datadog-agent/system-probe.yaml
+  echo "  enabled: true" >> /etc/datadog-agent/system-probe.yaml
+  echo "runtime_security_config:" >> /etc/datadog-agent/security-agent.yaml
+  echo "  enabled: true" >> /etc/datadog-agent/security-agent.yaml
+
+fi
+
+  # Restart the agent
+  sudo service datadog-agent restart
+EOF
+
+# Clean up
+chmod 755 /tmp/start_datadog.sh
+/tmp/start_datadog.sh >> /tmp/datadog_start.log 2>&1 & disown
+""", True)
